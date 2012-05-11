@@ -1,5 +1,7 @@
 import urllib
 import urllib2
+import time
+import sys
 from xml.dom.minidom import parseString
 
 class VCBuilder:
@@ -62,9 +64,10 @@ class VCBuilder:
   def BuildAPST(self, archiveId, vaultInfo):
     print('Starting build phase')
 
-    #Abuse the fact that we can specify any date range to the server
-    #action=GetSlotWithServer&ArchiveId=13F4B32526C97F7439F96D538D6506EC21110000ECTO1-EVSVR-VM.gpk.rnd.veritas.com&StartDate=2012-04-01&EndDate=2012-06-30&MaxDbSize=512000&DbId=1&LastSnum=80&DeleteJobIds=
-    values = {'ArchiveId' : archiveId, 'StartDate' : '2010-04-01', 'EndDate' : '2010-06-30', 'MaxDbSize' : '512000', 'DbId' : '1', 'LastSnum' : '0', 'DeleteJobIds' : ''}
+    startDate = vaultInfo['StartDate']
+    endDate = vaultInfo['EndDate']
+
+    values = {'ArchiveId' : archiveId, 'StartDate' : startDate[:-9], 'EndDate' : endDate[:-9], 'MaxDbSize' : '512000', 'DbId' : '1', 'LastSnum' : vaultInfo['MaxSNUM'], 'DeleteJobIds' : ''}
 
     data = urllib.urlencode(values)
     url = self.targetServer + 'GetSlotWithServer.aspx'
@@ -80,36 +83,101 @@ class VCBuilder:
     print('Build Started, ID: ' + dbID)
     return dbID
 
-  def GetJobID(dbId):
+  def GetJobID(self, dbId):
     print('Waiting for job to complete...')
-
+    
+    jobCompleted = False
     values = {'Id' : dbId, 'TestCounter' : '1'}
-
     data = urllib.urlencode(values)
     url = self.targetServer + 'HasJobBuiltYet.aspx'
     req = urllib2.Request(url, data)
-    f = urllib2.urlopen(req)
-    data = f.read()
-    f.close()
 
-    dom = parseString(data)
-    JOBCOMPLETED_node = dom.getElementsByTagName('JOBCOMPLETED ')[0]
+    while (jobCompleted != True):
+        print('')
+        print('Checking Job status...')
+        f = urllib2.urlopen(req)
+        data = f.read()
+        f.close()
 
-    jobID = JOBCOMPLETED_node.getAttribute('Id')
-    moreToCome = JOBCOMPLETED_node.getAttribute('MoreToCome')
-    lastSnum = JOBCOMPLETED_node.getAttribute('LastSnum')
-    size = JOBCOMPLETED_node.getAttribute('Size')
-    cSize = JOBCOMPLETED_node.getAttribute('CSize')
-    itemCount = JOBCOMPLETED_node.getAttribute('ItemCount')
-    skipped = JOBCOMPLETED_node.getAttribute('Skipped')
+        dom = parseString(data)
+
+        if len(dom.getElementsByTagName('JOBCOMPLETED')) != 1:
+            print('\tJob is not yet finished on the server, sleeping for 5 seconds.')
+            time.sleep(5)
+            continue            
+
+        JOBCOMPLETED_node = dom.getElementsByTagName('JOBCOMPLETED')[0]
+
+        jobID = JOBCOMPLETED_node.getAttribute('Id')
+        moreToCome = JOBCOMPLETED_node.getAttribute('MoreToCome')
+        lastSnum = JOBCOMPLETED_node.getAttribute('LastSnum')
+        size = JOBCOMPLETED_node.getAttribute('Size')
+        cSize = JOBCOMPLETED_node.getAttribute('CSize')
+        itemCount = JOBCOMPLETED_node.getAttribute('ItemCount')
+        skipped = JOBCOMPLETED_node.getAttribute('Skipped')
+        jobCompleted = True
+        return jobID
 
 
   def DownloadDBFile(self, jobID):
-    print('Downloading file ' + jobID)
+    print('Downloading file... (' + jobID + ')')
+    url = self.targetServer + 'DownloadContent.aspx?JobId=' + jobID
+    req = urllib2.Request(url)
+
+    file_name = 'C:\\TestPST.pst'
+    response = urllib2.urlopen(url)
+    self.chunk_read(file_name, response, report_hook=self.chunk_report)
+
+    print('File downloaded! (Saved to: ' + file_name + ')')
+
+  def chunk_report(self, bytes_so_far, chunk_size, total_size):
+    percent = float(bytes_so_far) / total_size
+    percent = round(percent*100, 2)
+    sys.stdout.write("\r%2d%%" % percent)
+    sys.stdout.flush()
+
+    if bytes_so_far >= total_size:
+       sys.stdout.write('\n')
+
+  def chunk_read(self, file_name, response, chunk_size=8192, report_hook=None):
+    total_size = response.info().getheader('Content-Length').strip()
+    total_size = int(total_size)
+    bytes_so_far = 0
+
+    PSTFile = open(file_name, 'wb')
+
+    while 1:
+        chunk = response.read(chunk_size)
+        bytes_so_far += len(chunk)
+
+        if not chunk:
+            break
+    
+        PSTFile.write(chunk)
+        
+
+        if report_hook:
+            report_hook(bytes_so_far, chunk_size, total_size)
+
+    PSTFile.close()
+    return bytes_so_far
+
+  def DeleteFileOnServer(self, jobID):
+    print('Deleting file on server (' + jobID + ')...')
+
+    values = {'DeleteJobIds' : jobID + ' ', 'action' : 'DeleteJob'}
+
+    data = urllib.urlencode(values)
+    url = self.targetServer + 'DeleteJob.aspx'
+    req = urllib2.Request(url, data)
+    f = urllib2.urlopen(req)
+    f.close()
+    #fire and forget!
+    print('Done!')
 
 if __name__ == "__main__":
 
-  vcBuilder = VCBuilder('USER', 'PASSWORD', 'http://EV_SERVER_NAME/EnterpriseVault/')
+  vcBuilder = VCBuilder('USER_NAME', 'PASSWORD', 'http://EV_SERVER/EnterpriseVault/')
   
   archiveList = vcBuilder.GetPrimaryArchive()
   
@@ -120,3 +188,6 @@ if __name__ == "__main__":
   jobID = vcBuilder.GetJobID(dbId)
 
   vcBuilder.DownloadDBFile(jobID)
+
+  # Be good and clean up the file on the server!
+  vcBuilder.DeleteFileOnServer(jobID)
