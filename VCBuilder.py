@@ -13,7 +13,7 @@ class VCBuilder:
     self.opener = urllib2.build_opener(self.handler)
     urllib2.install_opener(self.opener)
 
-  def GetPrimaryArchive(self):
+  def GetFirstAccessibleArchiveInList(self):
     print('Fetching Accessible archives...')
     url = self.targetServer + 'ListArchives.aspx'
     req = urllib2.Request(url)
@@ -61,13 +61,13 @@ class VCBuilder:
           'Count' : itemCount
          }
 
-  def BuildAPST(self, archiveId, vaultInfo):
+  def BuildAPST(self, archiveId, vaultInfo, startSeqNum):
     print('Starting build phase')
 
     startDate = vaultInfo['StartDate']
     endDate = vaultInfo['EndDate']
 
-    values = {'ArchiveId' : archiveId, 'StartDate' : startDate[:-9], 'EndDate' : endDate[:-9], 'MaxDbSize' : '512000', 'DbId' : '1', 'LastSnum' : vaultInfo['MaxSNUM'], 'DeleteJobIds' : ''}
+    values = {'ArchiveId' : archiveId, 'StartDate' : startDate[:-9], 'EndDate' : endDate[:-9], 'MaxDbSize' : '512000', 'DbId' : '1', 'LastSnum' : startSeqNum, 'DeleteJobIds' : ''}
 
     data = urllib.urlencode(values)
     url = self.targetServer + 'GetSlotWithServer.aspx'
@@ -83,18 +83,17 @@ class VCBuilder:
     print('Build Started, ID: ' + dbID)
     return dbID
 
-  def GetJobID(self, dbId):
+  def WaitForJobCompletion(self, dbId):
     print('Waiting for job to complete...')
     
-    jobCompleted = False
     values = {'Id' : dbId, 'TestCounter' : '1'}
     data = urllib.urlencode(values)
     url = self.targetServer + 'HasJobBuiltYet.aspx'
     req = urllib2.Request(url, data)
 
-    while (jobCompleted != True):
+    while (True):
         print('')
-        print('Checking Job status...')
+        print('Waiting for build to finish on the server (this will take a while)...')
         f = urllib2.urlopen(req)
         data = f.read()
         f.close()
@@ -102,8 +101,7 @@ class VCBuilder:
         dom = parseString(data)
 
         if len(dom.getElementsByTagName('JOBCOMPLETED')) != 1:
-            print('\tJob is not yet finished on the server, sleeping for 5 seconds.')
-            time.sleep(5)
+            time.sleep(120)
             continue            
 
         JOBCOMPLETED_node = dom.getElementsByTagName('JOBCOMPLETED')[0]
@@ -115,16 +113,18 @@ class VCBuilder:
         cSize = JOBCOMPLETED_node.getAttribute('CSize')
         itemCount = JOBCOMPLETED_node.getAttribute('ItemCount')
         skipped = JOBCOMPLETED_node.getAttribute('Skipped')
-        jobCompleted = True
-        return jobID
+
+        print('\tBuild completed, more to come: ' + moreToCome)
+        print('')
+        return {'ID' : jobID, 'MORE' : moreToCome, 'LASTSNUM' : lastSnum, 'ITEMCOUNT' : itemCount}
 
 
-  def DownloadDBFile(self, jobID):
+  def DownloadDBFile(self, jobID, filename):
     print('Downloading file... (' + jobID + ')')
     url = self.targetServer + 'DownloadContent.aspx?JobId=' + jobID
     req = urllib2.Request(url)
 
-    file_name = 'C:\\TestPST.pst'
+    file_name = 'C:\\PSTS\\File' + str(filename) + '.pst'
     response = urllib2.urlopen(url)
     self.chunk_read(file_name, response, report_hook=self.chunk_report)
 
@@ -179,15 +179,27 @@ if __name__ == "__main__":
 
   vcBuilder = VCBuilder('USER_NAME', 'PASSWORD', 'http://EV_SERVER/EnterpriseVault/')
   
-  archiveList = vcBuilder.GetPrimaryArchive()
+  archiveList = vcBuilder.GetFirstAccessibleArchiveInList()
   
   vaultInfo = vcBuilder.GetVaultInfo(archiveList['VaultID'])
   
-  dbId = vcBuilder.BuildAPST(archiveList['VaultID'], vaultInfo)
+  seqNum = vaultInfo['MaxSNUM']
+  filename = 1
 
-  jobID = vcBuilder.GetJobID(dbId)
+  moreToCome = '1'
+  while (moreToCome == '1'):
+      dbId = vcBuilder.BuildAPST(archiveList['VaultID'], vaultInfo, seqNum)
+      jobInfo = vcBuilder.WaitForJobCompletion(dbId)
+      vcBuilder.DownloadDBFile(jobInfo['ID'], filename)
+      # Be good and clean up the file on the server!
+      vcBuilder.DeleteFileOnServer(jobInfo['ID'])
+      moreToCome = jobInfo['MORE']
 
-  vcBuilder.DownloadDBFile(jobID)
+      if (moreToCome == '1'):
+          print('More to download, adjusting sequence numbers to download more')
+          seqNum = jobInfo['LASTSNUM']
+          filename += 1
+          continue
 
-  # Be good and clean up the file on the server!
-  vcBuilder.DeleteFileOnServer(jobID)
+  print('All done.')
+
