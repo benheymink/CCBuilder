@@ -2,6 +2,7 @@ import urllib
 import urllib2
 import time
 import sys
+import getpass
 from xml.dom.minidom import parseString
 
 class VCBuilder:
@@ -119,12 +120,13 @@ class VCBuilder:
         return {'ID' : jobID, 'MORE' : moreToCome, 'LASTSNUM' : lastSnum, 'ITEMCOUNT' : itemCount}
 
 
-  def DownloadDBFile(self, jobID, filename):
+  def DownloadDBFile(self, jobID, filename, pathForFile):
     print('Downloading file... (' + jobID + ')')
     url = self.targetServer + 'DownloadContent.aspx?JobId=' + jobID
     req = urllib2.Request(url)
 
-    file_name = 'C:\\PSTS\\File' + str(filename) + '.pst'
+    file_name = str(pathForFile) + '\\File' + str(filename) + '.pst' 
+
     response = urllib2.urlopen(url)
     self.chunk_read(file_name, response, report_hook=self.chunk_report)
 
@@ -176,8 +178,12 @@ class VCBuilder:
     print('Done!')
 
 if __name__ == "__main__":
+  userName = raw_input('Username: ')
+  password = getpass.getpass()
+  evServer = raw_input('Target EV Server: ')
+  pathForPSTs = raw_input('Enter path for PST files: ')
 
-  vcBuilder = VCBuilder('USER_NAME', 'PASSWORD', 'http://EV_SERVER/EnterpriseVault/')
+  vcBuilder = VCBuilder(userName, password, evServer)
   
   archiveList = vcBuilder.GetFirstAccessibleArchiveInList()
   
@@ -190,7 +196,7 @@ if __name__ == "__main__":
   while (moreToCome == '1'):
       dbId = vcBuilder.BuildAPST(archiveList['VaultID'], vaultInfo, seqNum)
       jobInfo = vcBuilder.WaitForJobCompletion(dbId)
-      vcBuilder.DownloadDBFile(jobInfo['ID'], filename)
+      vcBuilder.DownloadDBFile(jobInfo['ID'], filename, pathForPSTs)
       # Be good and clean up the file on the server!
       vcBuilder.DeleteFileOnServer(jobInfo['ID'])
       moreToCome = jobInfo['MORE']
